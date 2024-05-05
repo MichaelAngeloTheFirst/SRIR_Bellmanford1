@@ -1,24 +1,25 @@
 #include "mpi.h"
-#include <cstdio>
 #include <string>
 #include <iostream>
-
+#include <fstream>
+#include <vector>
+#include <tuple>
+#include <stdexcept>
 
 #define INF 1000000000
-#define N 5  
 
-struct Matrix{
-    int* mat;
-    int size;
-    Matrix(int size);
-    Matrix(const std::string& filename);
-    ~Matrix();
-    int get(int i, int j) const;
-    void set(int i, int j, int value);
-};
+using Edge = std::array<int, 3>;
+using Edges = std::vector<Edge>;
+using Results = std::tuple<std::vector<int>, std::vector<int>>;
 
-int bellman_ford(const Matrix& m, MPI_Comm comm, int myRank, int numProc);
-void print_result(int dist, double start_time, double end_time);
+int u(const Edge& edge) { return edge[0]; }
+int v(const Edge& edge) { return edge[1]; }
+int w(const Edge& edge) { return edge[2]; }
+
+int getEdges(const std::string& filename, Edges& edges);
+Results seq_bellman_ford(const Edges& edges, int n, int source);
+Results par_bellman_ford(const Edges& edges, int n, int source, MPI_Comm comm, int myRank, int numProc);
+void print_result(const Results& results, double start_time, double end_time);
 
 
 int main(int argc, char** argv){
@@ -39,109 +40,142 @@ int main(int argc, char** argv){
     MPI_Comm_rank( world, &myRank);
 
     double timer_start, timer_end;
+    Results results;
 
-    Matrix matrix(argv[1]);
+    Edges edges;
+    int n = getEdges(argv[1], edges);
     // END
 
+    std::cout << "Sequential Bellman Ford: " << std::endl;
 
-    // BEGIN: Bellman-Ford Algorithm
+    // BEGIN: Sequential Bellman-Ford Algorithm
     MPI_Barrier(world);
     timer_start = MPI_Wtime();
 
-    int dist = bellman_ford(matrix, world, myRank, numProc);
+    results = seq_bellman_ford(edges, n, 0);
     
     MPI_Barrier(world);
     timer_end = MPI_Wtime();
-    // END
 
     if (myRank == 0) {
-       print_result(dist, timer_start, timer_end);
+       print_result(results, timer_start, timer_end);
     }
+    // END
+
+    std::cout << "Parallel Bellman Ford: " << std::endl;
+
+    // BEGIN: Prallel Bellman-Ford Algorithm
+    MPI_Barrier(world);
+    timer_start = MPI_Wtime();
+
+    results = par_bellman_ford(edges, n, 0, world, myRank, numProc);
+    
+    MPI_Barrier(world);
+    timer_end = MPI_Wtime();
+
+    if (myRank == 0) {
+       print_result(results, timer_start, timer_end);
+    }
+    // END
 
     MPI_Finalize();
     return 0;
 
 }
 
-
-int bellman_ford(const Matrix& m, MPI_Comm comm, int myRank, int numProc){
-    int n = m.size;
-    int* dist = (int*) malloc(n*sizeof(int));
-    for (int i = 0; i < n; i++){
-        dist[i] = INF;
+int getEdges(const std::string& filename, Edges& edges) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("Cannot open file " + filename);
     }
-    dist[0] = 0;
-
-    for (int i = 0; i < n-1; i++){
-        for (int u = 0; u < n; u++){
-            for (int v = 0; v < n; v++){
-                if (m.get(u, v) != INF){
-                    if (dist[u] + m.get(u, v) < dist[v]){
-                        dist[v] = dist[u] + m.get(u, v);
-                    }
-                }
-            }
-        }
+    
+    int NumV, NumE;
+    file >> NumV >> NumE;
+    edges.resize(NumE);
+    for (auto& edge : edges){
+        file >> edge[0] >> edge[1] >> edge[2];
     }
+    file.close();
 
-    for (int u = 0; u < n; u++){
-        for (int v = 0; v < n; v++){
-            if (m.get(u, v) != INF){
-                if (dist[u] + m.get(u, v) < dist[v]){
-                    return 0;
-                }
-            }
-        }
-    }
-
-    return 1;
+    return NumV;
 }
 
-void print_result(int dist, double start_time, double end_time){
-    if (dist < 0) {
-        std::cout << "Negative cycle detected" << std::endl;
-    } else {
-        std::cout << "Distance from source to destination: " << dist << std::endl;
+
+Results seq_bellman_ford(const Edges& edges, int n, int source){
+    auto dist = std::vector<int>(n, INF); // Tablica odległości od źródła
+    auto p = std::vector<int>(n, -1);  // Tablica poprzedników
+
+    // Odległość od źródła do samego siebie wynosi 0
+    dist[source] = 0;
+
+    // Pętla relaksacji
+    for (int i = 0; i < n-1; i++){
+        // Dla każdej krawędzi sprawdzamy czy można skrócić odległość
+        for (auto edge : edges){
+            if (dist[u(edge)] + w(edge) < dist[v(edge)]){
+                dist[v(edge)] = dist[u(edge)] + w(edge);
+                p[v(edge)] = u(edge);
+            }
+        }
+    }
+
+    // Sprawdzamy czy nie ma cyklu ujemnego
+    for (auto edge : edges){
+        if (dist[u(edge)] + w(edge) < dist[v(edge)]){
+            throw std::runtime_error("Negative cycle detected");
+        }
+    }
+
+    return {dist, p};
+}
+
+Results par_bellman_ford(const Edges& edges, int n, int source, MPI_Comm comm, int myRank, int numProc){
+    auto dist = std::vector<int>(n, INF); // Tablica odległości od źródła
+    auto p = std::vector<int>(n, -1);  // Tablica poprzedników
+
+    // Odległość od źródła do samego siebie wynosi 0
+    dist[source] = 0;
+
+    // Lokalne wartości
+    int verticesPerProcess = n / numProc;
+    int remainder = n % numProc;
+    int startVertex = myRank * verticesPerProcess;
+    int endVertex = startVertex + verticesPerProcess;
+
+    // Wyrównanie ze względu na resztę z dzielenia
+    if (myRank == numProc - 1) {
+        endVertex += remainder;
+    }
+
+    // Perform parallel Bellman-Ford algorithm
+    for (int k = 0; k < n - 1; k++) {
+        // Broadcast the current distance array
+        MPI_Bcast(&dist[0], n, MPI_INT, 0, comm);
+
+        // Relax edges in parallel
+        for (auto edge : edges) {
+            if (u(edge) >= startVertex && u(edge) < endVertex) {
+                if (dist[u(edge)] + w(edge) < dist[v(edge)]) {
+                    dist[v(edge)] = dist[u(edge)] + w(edge);
+                    p[v(edge)] = u(edge);
+                }
+            }
+        }
+
+        // Gather the updated distance array
+        MPI_Allgather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, &dist[0], verticesPerProcess, MPI_INT, comm);
+    }
+
+    return {dist, p};
+}
+
+void print_result(const Results& results, double start_time, double end_time){
+    auto dist = std::get<0>(results);
+    auto p = std::get<1>(results);
+
+    for (int i = 0; i < dist.size(); i++){
+        printf("Distance from 0 to %d: %d\n", i, dist[i]);
     }
     printf("Time: %f\n", end_time - start_time);
 }
 
-Matrix::Matrix(int size){
-    this->size = size;
-    this->mat = (int*) malloc(size*size*sizeof(int));
-    for (int i = 0; i < size; i++){
-        for (int j = 0; j < size; j++){
-            this->set(i, j, INF);
-        }
-    }
-}
-
-Matrix::Matrix(const std::string& filename) {
-    this->size = N;
-    this->mat = (int*) malloc(N*N*sizeof(int));
-    int mat[N][N] = {
-        {INF,INF,4, INF,5},
-        {INF,INF,-4,INF,INF},
-        {-3,INF,INF,INF,INF},
-        {4,INF,7,INF,3},
-        {INF,2,3,INF,INF}
-    };
-
-    for (int i = 0; i < N; i++){
-        for (int j = 0; j < N; j++){
-            this->set(i, j, mat[i][j]);
-        }
-    }
-}
-
-Matrix::~Matrix(){
-    free(mat);
-}
-
-void Matrix::set(int i, int j, int value){
-    mat[i*size+j] = value;
-}
-
-int Matrix::get(int i, int j) const{
-    return mat[i*size+j];
-}
