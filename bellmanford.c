@@ -4,6 +4,7 @@
 
 #define INF 1000000000
 
+// Funkcja sczytuje krawędzie z pliku i zapisuje ilość wierzchołków, krawędzi oraz krawędzie do zmiennych przekazanych jako argumenty
 int readFile(const char* filename, int* n, int* m, int** edges) {
     FILE* file = fopen(filename , "r");
     if (file == NULL) {
@@ -24,7 +25,7 @@ int readFile(const char* filename, int* n, int* m, int** edges) {
 }
 
 int main(int argc, char** argv) {
-    // MPI Initialization
+    // Inicjalizacja MPI
     MPI_Comm world;
     int numProc;
     int myRank;
@@ -34,9 +35,10 @@ int main(int argc, char** argv) {
     MPI_Comm_size( world, &numProc);
     MPI_Comm_rank( world, &myRank);
 
-    // Read input file
+    // Sczytanie danych z pliku przez proces master
     int numV, numE;
     int* edges;
+    int source = 0;
 
     if (myRank == 0) {
         if (argc <= 1) {
@@ -47,29 +49,37 @@ int main(int argc, char** argv) {
         if (readFile(argv[1], &numV, &numE, &edges) != 0) {
             return -1;
         }
+
+        // Pobranie wierzchołka źródłowego z argumentów
+        if (argc == 3){
+            source = atoi(argv[2]);
+        }
     }
 
-    // Start timer
     MPI_Barrier(world);
+
+    // Rozpoczęcie pomiaru czasu
     double timer_start, timer_end;
     if (myRank == 0) {
         timer_start = MPI_Wtime();
     }
 
-    // Bellman-Ford Algorithm
+    // Rozproszony algorytm Bellmana Forda
 
-    // Broadcast Number of Vertices and Edges
+    // Przekazanie ilości wierzchołków i krawędzi wszystkim procesom.
     MPI_Bcast(&numV, 1, MPI_INT, 0, world);
     MPI_Bcast(&numE, 1, MPI_INT, 0, world);
+    MPI_Bcast(&source, 1, MPI_INT, 0, world);
 
-    // Broadcast edges
+    // Alokacja pamięci na krawędzie dla procesów innych niż master
     if (myRank != 0) {
         edges = (int*)malloc(numE * 3 * sizeof(int));
     }
 
+    // Przekazanie krawędzi wszystkim procesom
     MPI_Bcast(edges, numE * 3 * sizeof(int), MPI_BYTE, 0, world);
 
-    // Calculate local edges
+    // Wyliczenie zakresu krawędzi dla danego procesu
     int edgesPerProcess = numE / numProc;
     int rem = numE % numProc;
     int startEdge = myRank * edgesPerProcess;
@@ -78,23 +88,27 @@ int main(int argc, char** argv) {
         endEdge += rem;
     }    
 
-    // Initialize distance array
+    // Alokacja pamięci na tablice odległości
     int* dist = (int*)malloc(numV * sizeof(int));
     int* localDist = (int*)malloc(numV * sizeof(int));
+
+    // Inicjalicacja tablicy odległości dla procesu master
     if(myRank == 0) {
         for (int i = 0; i < numV; i++) {
             dist[i] = INF;
         }
-        dist[0] = 0;
+        dist[source] = 0;
     }
 
-    // Relax edges
+    // Pętla głowna algorytmu
     for (int i = 0; i < numV - 1; i++) {
-        // Divide work
+        // Przekazanie tablicy odległości do wszystkich procesów
         MPI_Bcast(dist, numV, MPI_INT, 0, world);
+        // Skopiowanie tablicy odległości do tablicy lokalnej
         for (int i = 0; i < numV; i++) {
             localDist[i] = dist[i];
         }
+        // Obliczenie nowych odległości
         for (int j = startEdge; j < endEdge; j++) {
             int u = edges[j * 3];
             int v = edges[j * 3 + 1];
@@ -104,11 +118,11 @@ int main(int argc, char** argv) {
                 localDist[v] = localDist[u] + w;
             }
         }
-        // Gather results
+        // Zbieranie wyników
         MPI_Reduce(localDist, dist, numV, MPI_INT, MPI_MIN, 0, world);
     }
 
-    // Check negative cycle
+    // Sprawdzenie czy graf zawiera ujemny cykl
     int hasNegativeCycle = 0;
     MPI_Bcast(dist, numV, MPI_INT, 0, world);
 
@@ -126,25 +140,28 @@ int main(int argc, char** argv) {
     MPI_Allreduce(MPI_IN_PLACE, &hasNegativeCycle, 1, MPI_INT, MPI_MAX, world);
     MPI_Barrier(world);
 
-    //Show Results
     if (myRank == 0) {
-        // End timer
+        // zakonczenie pomiaru czasu
         timer_end = MPI_Wtime();
 
-        // Print results
+        // Pokazanie wyników przez proces master
         if (hasNegativeCycle) {
             printf("Graph contains negative cycle\n");
         } else {
             for (int i = 0; i < numV; i++) {
-                printf("Distance from 0 to %d: %d\n", i, dist[i]);
+                printf("Distance from %d to %d: %d\n", source, i, dist[i]);
             }
         }
 
         printf("Time: %f\n", timer_end - timer_start);
     }
 
-    // Clean up
+    // Zwolnienie pamięci
     free(edges);
+    free(dist);
+    free(localDist);
+
+    // Zakończenie MPI
     MPI_Finalize();
     return 0;
 }

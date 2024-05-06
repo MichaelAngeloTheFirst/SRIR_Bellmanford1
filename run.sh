@@ -1,2 +1,2 @@
-mpicc bellmanford.c -o cbel.out
-mpiexec -n 3 ./cbel.out input.txt
+mpicc bellmanford.c -o bellmanford.out
+mpiexec -n 4 -f nodes ./bellmanford.out input.txt
