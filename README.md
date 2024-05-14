@@ -1,7 +1,8 @@
 # Routing w sieciach komputerowych - algorytm Bellmana-Forda.
 ## Alan Guzek i Michał Sienkiewicz
 
-Implementacja rozproszonego algorytmu Bellmana-Forda przy użyciu MPI w języku C. Program liczy na podstawie pliku wejściowego zawierającego informacje o grafie najmniejsze odległości pomiędzy wybranym wierzchołkiem source, a innymi wierzchołkami.
+Implementacja rozproszonego algorytmu Bellmana-Forda przy użyciu MPI w języku C. 
+Program liczy na podstawie pliku wejściowego zawierającego informacje o grafie najmniejsze odległości pomiędzy wybranym wierzchołkiem source, a innymi wierzchołkami.
 
 Format pliku wejściowego:
 ```
